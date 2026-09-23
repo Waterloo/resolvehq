@@ -1,0 +1,1043 @@
+import { sql } from "drizzle-orm";
+import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+
+const timestamps = {
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+    .notNull()
+    .$defaultFn(() => new Date())
+    .$onUpdate(() => new Date()),
+};
+
+export const organizations = sqliteTable("organizations", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  slug: text("slug").notNull().unique(),
+  supportEmail: text("support_email"),
+  nextTicketNumber: integer("next_ticket_number").notNull().default(1001),
+  ...timestamps,
+});
+
+export const inboxes = sqliteTable(
+  "inboxes",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    emailAddress: text("email_address").notNull(),
+    provider: text("provider", { enum: ["cloudflare_email", "development"] })
+      .notNull()
+      .default("cloudflare_email"),
+    isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
+    disabledAt: integer("disabled_at", { mode: "timestamp_ms" }),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("inboxes_email_address_uidx").on(table.emailAddress),
+    index("inboxes_organization_idx").on(table.organizationId),
+    // Partial: only live inboxes claim an address, so migration 0006 can retire
+    // a case-only duplicate instead of failing to create the index.
+    uniqueIndex("inboxes_lower_email_uidx")
+      .on(sql`lower(${table.emailAddress})`)
+      .where(sql`${table.disabledAt} is null`),
+  ],
+);
+
+export const users = sqliteTable("users", {
+  id: text("id").primaryKey(),
+  email: text("email").notNull().unique(),
+  name: text("name").notNull(),
+  passwordHash: text("password_hash").notNull(),
+  avatarUrl: text("avatar_url"),
+  disabledAt: integer("disabled_at", { mode: "timestamp_ms" }),
+  lastLoginAt: integer("last_login_at", { mode: "timestamp_ms" }),
+  ...timestamps,
+});
+
+export const organizationMemberships = sqliteTable(
+  "organization_memberships",
+  {
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: text("role", { enum: ["owner", "admin", "agent"] }).notNull(),
+    disabledAt: integer("disabled_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [
+    primaryKey({ columns: [table.organizationId, table.userId] }),
+    index("memberships_user_idx").on(table.userId),
+    index("memberships_organization_role_idx").on(table.organizationId, table.role),
+  ],
+);
+
+export const organizationInvitations = sqliteTable(
+  "organization_invitations",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    role: text("role", { enum: ["admin", "agent"] }).notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    invitedByUserId: text("invited_by_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    acceptedAt: integer("accepted_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [
+    index("invitations_organization_email_idx").on(table.organizationId, table.email),
+    index("invitations_expires_idx").on(table.expiresAt),
+  ],
+);
+
+export const sessions = sqliteTable(
+  "sessions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull().unique(),
+    csrfTokenHash: text("csrf_token_hash").notNull(),
+    userAgent: text("user_agent"),
+    ipHash: text("ip_hash"),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    lastSeenAt: integer("last_seen_at", { mode: "timestamp_ms" }).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [
+    index("sessions_user_idx").on(table.userId),
+    index("sessions_organization_idx").on(table.organizationId),
+    index("sessions_expires_idx").on(table.expiresAt),
+  ],
+);
+
+export const customers = sqliteTable(
+  "customers",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    email: text("email").notNull(),
+    company: text("company"),
+    phone: text("phone"),
+    notes: text("notes"),
+    normalizedSearch: text("normalized_search").notNull().default(""),
+    lastContactedAt: integer("last_contacted_at", { mode: "timestamp_ms" }),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("customers_organization_email_uidx").on(table.organizationId, table.email),
+    index("customers_organization_name_idx").on(table.organizationId, table.name),
+    index("customers_created_id_idx").on(table.organizationId, table.createdAt, table.id),
+    index("customers_organization_last_contact_idx").on(table.organizationId, table.lastContactedAt),
+  ],
+);
+
+/**
+ * Every address a customer writes from. `customers.email` stays as the
+ * denormalized primary; threading and search read the identity rows so a
+ * customer who switches address keeps one history.
+ */
+export const customerIdentities = sqliteTable(
+  "customer_identities",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    customerId: text("customer_id")
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull().default("email"),
+    value: text("value").notNull(),
+    isPrimary: integer("is_primary", { mode: "boolean" }).notNull().default(false),
+    source: text("source", { enum: ["backfill", "inbound_from", "manual", "merge"] })
+      .notNull()
+      .default("backfill"),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("customer_identities_org_value_uidx").on(table.organizationId, table.kind, table.value),
+    index("customer_identities_customer_idx").on(table.organizationId, table.customerId),
+    uniqueIndex("customer_identities_primary_uidx")
+      .on(table.customerId)
+      .where(sql`${table.isPrimary} = 1`),
+  ],
+);
+
+export const slaStates = ["none", "ok", "due_soon", "breached"] as const;
+
+export const tickets = sqliteTable(
+  "tickets",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    number: integer("number").notNull(),
+    customerId: text("customer_id")
+      .notNull()
+      .references(() => customers.id, { onDelete: "restrict" }),
+    inboxId: text("inbox_id").references(() => inboxes.id, { onDelete: "set null" }),
+    subject: text("subject").notNull(),
+    status: text("status", { enum: ["open", "pending", "waiting_customer", "resolved", "closed"] })
+      .notNull()
+      .default("open"),
+    priority: text("priority", { enum: ["low", "normal", "high", "urgent"] })
+      .notNull()
+      .default("normal"),
+    assignedUserId: text("assigned_user_id").references(() => users.id, { onDelete: "set null" }),
+    assignedTeamId: text("assigned_team_id"),
+    normalizedSearch: text("normalized_search").notNull().default(""),
+    lastMessagePreview: text("last_message_preview").notNull().default(""),
+    messageCount: integer("message_count").notNull().default(0),
+    lastCustomerReplyAt: integer("last_customer_reply_at", { mode: "timestamp_ms" }),
+    lastAgentReplyAt: integer("last_agent_reply_at", { mode: "timestamp_ms" }),
+    waitingSince: integer("waiting_since", { mode: "timestamp_ms" }),
+    version: integer("version").notNull().default(1),
+    lastReplyAt: integer("last_reply_at", { mode: "timestamp_ms" }),
+    resolvedAt: integer("resolved_at", { mode: "timestamp_ms" }),
+    closedAt: integer("closed_at", { mode: "timestamp_ms" }),
+    /** Plain text, deliberately not a foreign key: deleting a policy must not disturb computed dues. */
+    slaPolicyId: text("sla_policy_id"),
+    firstResponseDueAt: integer("first_response_due_at", { mode: "timestamp_ms" }),
+    resolutionDueAt: integer("resolution_due_at", { mode: "timestamp_ms" }),
+    /** Set once, on the first outbound agent message. Freezes first-response evaluation. */
+    firstResponseAt: integer("first_response_at", { mode: "timestamp_ms" }),
+    /** Denormalized so the Overdue queue is an index lookup rather than business-hours arithmetic per row. */
+    slaState: text("sla_state", { enum: slaStates }).notNull().default("none"),
+    /** Set when the breach webhook fires, so a breach is announced exactly once. */
+    slaBreachNotifiedAt: integer("sla_breach_notified_at", { mode: "timestamp_ms" }),
+    snoozedUntil: integer("snoozed_until", { mode: "timestamp_ms" }),
+    snoozeReason: text("snooze_reason"),
+    /** When the current snooze began, so the pause is exact even when the cron runs late. */
+    snoozeStartedAt: integer("snooze_started_at", { mode: "timestamp_ms" }),
+    /** Accumulated snoozed time. On wake the due dates shift by the delta, which is how the SLA clock pauses. */
+    snoozedTotalMs: integer("snoozed_total_ms").notNull().default(0),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("tickets_organization_number_uidx").on(table.organizationId, table.number),
+    index("tickets_organization_status_updated_idx").on(table.organizationId, table.status, table.updatedAt),
+    index("tickets_organization_assignee_status_idx").on(table.organizationId, table.assignedUserId, table.status),
+    index("tickets_organization_customer_idx").on(table.organizationId, table.customerId),
+    index("tickets_customer_cursor_idx").on(table.organizationId, table.customerId, table.id),
+    index("tickets_organization_priority_idx").on(table.organizationId, table.priority),
+    index("tickets_organization_updated_id_idx").on(table.organizationId, table.updatedAt, table.id),
+    index("tickets_organization_inbox_status_idx").on(table.organizationId, table.inboxId, table.status),
+    index("tickets_org_sla_due_idx").on(table.organizationId, table.slaState, table.firstResponseDueAt),
+    index("tickets_org_snoozed_idx").on(table.organizationId, table.snoozedUntil),
+  ],
+);
+
+export const ticketAssignments = sqliteTable(
+  "ticket_assignments",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    ticketId: text("ticket_id")
+      .notNull()
+      .references(() => tickets.id, { onDelete: "cascade" }),
+    assignedToUserId: text("assigned_to_user_id").references(() => users.id, { onDelete: "set null" }),
+    assignedByUserId: text("assigned_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [index("ticket_assignments_organization_ticket_idx").on(table.organizationId, table.ticketId)],
+);
+
+export const messages = sqliteTable(
+  "messages",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    ticketId: text("ticket_id")
+      .notNull()
+      .references(() => tickets.id, { onDelete: "cascade" }),
+    authorType: text("author_type", { enum: ["customer", "agent", "system"] }).notNull(),
+    authorUserId: text("author_user_id").references(() => users.id, { onDelete: "set null" }),
+    authorCustomerId: text("author_customer_id").references(() => customers.id, { onDelete: "set null" }),
+    kind: text("kind", { enum: ["message", "internal_note"] })
+      .notNull()
+      .default("message"),
+    bodyText: text("body_text").notNull(),
+    bodyHtml: text("body_html"),
+    normalizedSearch: text("normalized_search").notNull().default(""),
+    providerMessageId: text("provider_message_id"),
+    clientMessageId: text("client_message_id"),
+    rfcMessageId: text("rfc_message_id"),
+    deliveryStatus: text("delivery_status", { enum: ["received", "queued", "sent", "failed"] }).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [
+    index("messages_organization_ticket_created_idx").on(table.organizationId, table.ticketId, table.createdAt),
+    index("messages_thread_cursor_idx").on(table.organizationId, table.ticketId, table.createdAt, table.id),
+    index("messages_orphan_queued_idx")
+      .on(table.createdAt, table.id)
+      .where(sql`${table.authorType} = 'agent' AND ${table.kind} = 'message' AND ${table.deliveryStatus} = 'queued'`),
+    // Partial: a message without a provider/client/RFC id is not a duplicate of
+    // every other message that lacks one.
+    uniqueIndex("messages_organization_provider_uidx")
+      .on(table.organizationId, table.providerMessageId)
+      .where(sql`${table.providerMessageId} IS NOT NULL`),
+    uniqueIndex("messages_organization_client_uidx")
+      .on(table.organizationId, table.clientMessageId)
+      .where(sql`${table.clientMessageId} IS NOT NULL`),
+    uniqueIndex("messages_organization_rfc_uidx")
+      .on(table.organizationId, table.rfcMessageId)
+      .where(sql`${table.rfcMessageId} IS NOT NULL`),
+  ],
+);
+
+export const inboundMailEvents = sqliteTable(
+  "inbound_mail_events",
+  {
+    id: text("id").primaryKey(),
+    inboxId: text("inbox_id").references(() => inboxes.id, { onDelete: "set null" }),
+    organizationId: text("organization_id").references(() => organizations.id, { onDelete: "cascade" }),
+    stagingObjectKey: text("staging_object_key").notNull().unique(),
+    providerMessageId: text("provider_message_id"),
+    status: text("status", { enum: ["staged", "processing", "completed", "failed"] })
+      .notNull()
+      .default("staged"),
+    messageId: text("message_id").references(() => messages.id, { onDelete: "set null" }),
+    leaseUntil: integer("lease_until").notNull().default(0),
+    dispatchUntil: integer("dispatch_until").notNull().default(0),
+    terminalReason: text("terminal_reason"),
+    generation: integer("generation").notNull().default(0),
+    envelopeTo: text("envelope_to"),
+    envelopeFrom: text("envelope_from"),
+    nextAttemptAt: integer("next_attempt_at").notNull().default(0),
+    attachmentCursor: integer("attachment_cursor").notNull().default(0),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error"),
+    completedAt: integer("completed_at", { mode: "timestamp_ms" }),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("inbound_events_inbox_provider_uidx")
+      .on(table.inboxId, table.providerMessageId)
+      .where(sql`${table.providerMessageId} IS NOT NULL`),
+    index("inbound_events_status_updated_idx").on(table.status, table.updatedAt),
+  ],
+);
+
+export const outboundMailJobs = sqliteTable(
+  "outbound_mail_jobs",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    messageId: text("message_id")
+      .notNull()
+      .references(() => messages.id, { onDelete: "cascade" }),
+    idempotencyKey: text("idempotency_key").notNull().unique(),
+    status: text("status", { enum: ["pending", "processing", "sent", "failed"] })
+      .notNull()
+      .default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: integer("next_attempt_at", { mode: "timestamp_ms" }).notNull(),
+    providerMessageId: text("provider_message_id"),
+    lastError: text("last_error"),
+    leaseUntil: integer("lease_until").notNull().default(0),
+    dispatchUntil: integer("dispatch_until").notNull().default(0),
+    terminalReason: text("terminal_reason"),
+    generation: integer("generation").notNull().default(0),
+    firstAttemptAt: integer("first_attempt_at"),
+    /** Set immediately before a non-idempotent provider send; never cleared by a successful send. */
+    sendAttemptedAt: integer("send_attempted_at"),
+    envelope: text("envelope"),
+    sentAt: integer("sent_at", { mode: "timestamp_ms" }),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("outbound_jobs_message_uidx").on(table.messageId),
+    index("outbound_jobs_status_next_idx").on(table.status, table.nextAttemptAt),
+    index("outbound_jobs_provider_idx").on(table.providerMessageId),
+    index("outbound_jobs_stale_idx").on(table.status, table.updatedAt),
+  ],
+);
+
+export const providerWebhookEvents = sqliteTable(
+  "provider_webhook_events",
+  {
+    id: text("id").primaryKey(),
+    provider: text("provider").notNull(),
+    externalEventId: text("external_event_id").notNull(),
+    eventType: text("event_type").notNull(),
+    payload: text("payload", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+    processedAt: integer("processed_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [uniqueIndex("provider_webhook_event_uidx").on(table.provider, table.externalEventId)],
+);
+
+export const ticketReadStates = sqliteTable(
+  "ticket_read_states",
+  {
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    ticketId: text("ticket_id")
+      .notNull()
+      .references(() => tickets.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    lastReadAt: integer("last_read_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.ticketId, table.userId] }),
+    index("ticket_read_states_org_user_idx").on(table.organizationId, table.userId),
+  ],
+);
+
+export const ticketDrafts = sqliteTable(
+  "ticket_drafts",
+  {
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    ticketId: text("ticket_id")
+      .notNull()
+      .references(() => tickets.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind", { enum: ["message", "internal_note"] })
+      .notNull()
+      .default("message"),
+    body: text("body").notNull().default(""),
+    revision: integer("revision").notNull().default(1),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [primaryKey({ columns: [table.ticketId, table.userId] })],
+);
+
+export const teams = sqliteTable(
+  "teams",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    ...timestamps,
+  },
+  (table) => [uniqueIndex("teams_organization_name_uidx").on(table.organizationId, table.name)],
+);
+
+export const teamMembers = sqliteTable(
+  "team_members",
+  {
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    teamId: text("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [
+    primaryKey({ columns: [table.teamId, table.userId] }),
+    index("team_members_org_user_idx").on(table.organizationId, table.userId),
+  ],
+);
+
+export const savedViews = sqliteTable(
+  "saved_views",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    ownerUserId: text("owner_user_id").references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    visibility: text("visibility", { enum: ["personal", "shared"] })
+      .notNull()
+      .default("personal"),
+    filters: text("filters", { mode: "json" }).$type<Record<string, unknown>>().notNull().default({}),
+    ...timestamps,
+  },
+  (table) => [index("saved_views_organization_owner_idx").on(table.organizationId, table.ownerUserId)],
+);
+
+export const notifications = sqliteTable(
+  "notifications",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    ticketId: text("ticket_id").references(() => tickets.id, { onDelete: "cascade" }),
+    type: text("type").notNull(),
+    title: text("title").notNull(),
+    readAt: integer("read_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [index("notifications_org_user_read_idx").on(table.organizationId, table.userId, table.readAt)],
+);
+
+export const tags = sqliteTable(
+  "tags",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    color: text("color").notNull().default("slate"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [uniqueIndex("tags_organization_name_uidx").on(table.organizationId, table.name)],
+);
+
+export const ticketTags = sqliteTable(
+  "ticket_tags",
+  {
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    ticketId: text("ticket_id")
+      .notNull()
+      .references(() => tickets.id, { onDelete: "cascade" }),
+    tagId: text("tag_id")
+      .notNull()
+      .references(() => tags.id, { onDelete: "cascade" }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.ticketId, table.tagId] }),
+    index("ticket_tags_organization_tag_idx").on(table.organizationId, table.tagId),
+  ],
+);
+
+export const customerTags = sqliteTable(
+  "customer_tags",
+  {
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    customerId: text("customer_id")
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    tagId: text("tag_id")
+      .notNull()
+      .references(() => tags.id, { onDelete: "cascade" }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.customerId, table.tagId] }),
+    index("customer_tags_organization_tag_idx").on(table.organizationId, table.tagId),
+  ],
+);
+
+export const attachments = sqliteTable(
+  "attachments",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    ticketId: text("ticket_id")
+      .notNull()
+      .references(() => tickets.id, { onDelete: "cascade" }),
+    messageId: text("message_id").references(() => messages.id, { onDelete: "cascade" }),
+    objectKey: text("object_key").notNull().unique(),
+    filename: text("filename").notNull(),
+    contentType: text("content_type").notNull(),
+    size: integer("size").notNull(),
+    cleanupClaimedAt: integer("cleanup_claimed_at"),
+    checksum: text("checksum").notNull(),
+    uploadedByUserId: text("uploaded_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [
+    index("attachments_organization_ticket_idx").on(table.organizationId, table.ticketId),
+    index("attachments_organization_message_idx").on(table.organizationId, table.messageId),
+    // Partial: only the unlinked rows the orphan sweep walks.
+    index("attachments_pending_idx")
+      .on(table.messageId, table.createdAt)
+      .where(sql`${table.messageId} IS NULL`),
+  ],
+);
+
+export const savedReplies = sqliteTable(
+  "saved_replies",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    content: text("content").notNull(),
+    category: text("category"),
+    createdByUserId: text("created_by_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    ...timestamps,
+  },
+  (table) => [index("saved_replies_organization_category_idx").on(table.organizationId, table.category)],
+);
+
+export const activityActorTypes = ["user", "customer", "automation", "ai", "api_key", "system"] as const;
+
+export const activityLogs = sqliteTable(
+  "activity_logs",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    ticketId: text("ticket_id").references(() => tickets.id, { onDelete: "cascade" }),
+    actorUserId: text("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+    /** What kind of actor produced this entry. Display and filtering only; never authorization. */
+    actorType: text("actor_type", { enum: activityActorTypes })
+      .notNull()
+      .default("user"),
+    /** Display-only label for a non-human actor: a rule name, a model id, an API key name. */
+    actorLabel: text("actor_label"),
+    eventType: text("event_type").notNull(),
+    entityType: text("entity_type").notNull(),
+    entityId: text("entity_id").notNull(),
+    metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>().notNull().default({}),
+    requestId: text("request_id"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [
+    index("activity_logs_organization_created_idx").on(table.organizationId, table.createdAt),
+    index("activity_logs_organization_ticket_idx").on(table.organizationId, table.ticketId),
+    index("activity_logs_org_actor_type_idx").on(table.organizationId, table.actorType, table.createdAt),
+  ],
+);
+
+export const slaPolicies = sqliteTable(
+  "sla_policies",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** NULL is the workspace default. A non-null value scopes the policy to that priority. */
+    priority: text("priority", { enum: ["low", "normal", "high", "urgent"] }),
+    /** Business minutes, not wall-clock. Nullable: a policy may set only one of the two targets. */
+    firstResponseMinutes: integer("first_response_minutes"),
+    resolutionMinutes: integer("resolution_minutes"),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    ...timestamps,
+  },
+  (table) => [
+    index("sla_policies_org_enabled_idx").on(table.organizationId, table.enabled),
+    // One policy per priority, and — via the partial index on NULL — one default per workspace.
+    uniqueIndex("sla_policies_org_priority_uidx").on(table.organizationId, table.priority),
+    uniqueIndex("sla_policies_org_default_uidx").on(table.organizationId),
+  ],
+);
+
+export const csatResponses = sqliteTable(
+  "csat_responses",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    ticketId: text("ticket_id")
+      .notNull()
+      .references(() => tickets.id, { onDelete: "cascade" }),
+    customerId: text("customer_id")
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    messageId: text("message_id").references(() => messages.id, { onDelete: "set null" }),
+    /** Null until the customer answers; the row exists from sent_at so response rate is derivable. */
+    rating: integer("rating"),
+    comment: text("comment"),
+    sentAt: integer("sent_at", { mode: "timestamp_ms" }).notNull(),
+    respondedAt: integer("responded_at", { mode: "timestamp_ms" }),
+    /** Set on the first accepted rating; enforces single use. */
+    consumedAt: integer("consumed_at", { mode: "timestamp_ms" }),
+    ...timestamps,
+  },
+  (table) => [
+    // One survey per ticket: this is what stops a second resolution sending another.
+    uniqueIndex("csat_responses_ticket_uidx").on(table.ticketId),
+    index("csat_responses_org_responded_idx").on(table.organizationId, table.respondedAt),
+    index("csat_responses_org_customer_idx").on(table.organizationId, table.customerId),
+  ],
+);
+
+export const apiKeyScopes = [
+  "tickets:read",
+  "tickets:write",
+  "customers:read",
+  "customers:write",
+  "kb:read",
+  "reports:read",
+  "mcp:read",
+] as const;
+
+export const apiKeys = sqliteTable(
+  "api_keys",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** First characters of the key, for display only. Never enough to authenticate. */
+    prefix: text("prefix").notNull(),
+    /** SHA-256 of the whole key. Uniquely indexed, so authentication is one lookup. */
+    keyHash: text("key_hash").notNull(),
+    scopes: text("scopes", { mode: "json" }).$type<string[]>().notNull().default([]),
+    /** Null means every inbox. */
+    inboxIds: text("inbox_ids", { mode: "json" }).$type<string[] | null>(),
+    /**
+     * Load-bearing, not decorative: authorization re-reads this member's live role on
+     * every request, so demoting them immediately reduces the key's power. A deleted
+     * member orphans the key, which is then denied.
+     */
+    createdByUserId: text("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    lastUsedAt: integer("last_used_at", { mode: "timestamp_ms" }),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
+    revokedAt: integer("revoked_at", { mode: "timestamp_ms" }),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("api_keys_hash_uidx").on(table.keyHash),
+    index("api_keys_org_revoked_idx").on(table.organizationId, table.revokedAt),
+  ],
+);
+
+export const webhookEvents = [
+  "ticket.created",
+  "ticket.assigned",
+  "ticket.status_changed",
+  "ticket.sla_breached",
+  "message.received",
+  "csat.received",
+] as const;
+
+export const webhookKinds = ["generic", "slack", "telegram"] as const;
+
+export const webhookEndpoints = sqliteTable(
+  "webhook_endpoints",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    kind: text("kind", { enum: webhookKinds }).notNull().default("generic"),
+    url: text("url").notNull(),
+    /** Signs `generic` deliveries. Shown once at creation, like an API key. */
+    secret: text("secret").notNull(),
+    /**
+     * Per-kind settings — for Telegram, the bot token and chat id. Per workspace in D1
+     * rather than a Worker secret, which would make every workspace share one bot.
+     */
+    config: text("config", { mode: "json" }).$type<Record<string, string>>().notNull().default({}),
+    events: text("events", { mode: "json" }).$type<string[]>().notNull().default([]),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    /** Consecutive failures. Reset on any success; at ten the endpoint disables itself. */
+    failureCount: integer("failure_count").notNull().default(0),
+    disabledAt: integer("disabled_at", { mode: "timestamp_ms" }),
+    lastSuccessAt: integer("last_success_at", { mode: "timestamp_ms" }),
+    lastError: text("last_error"),
+    ...timestamps,
+  },
+  (table) => [index("webhook_endpoints_org_enabled_idx").on(table.organizationId, table.enabled)],
+);
+
+export const webhookDeliveries = sqliteTable(
+  "webhook_deliveries",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    endpointId: text("endpoint_id")
+      .notNull()
+      .references(() => webhookEndpoints.id, { onDelete: "cascade" }),
+    event: text("event").notNull(),
+    payload: text("payload").notNull(),
+    status: text("status", { enum: ["pending", "delivered", "failed", "abandoned"] })
+      .notNull()
+      .default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: integer("next_attempt_at", { mode: "timestamp_ms" }),
+    responseCode: integer("response_code"),
+    lastError: text("last_error"),
+    ...timestamps,
+  },
+  (table) => [
+    // Deliberately NOT organization-scoped: the cron sweep is global across tenants and
+    // must find due deliveries without scanning per organization. Every request-
+    // originated query still filters on organization_id.
+    index("webhook_deliveries_retry_idx").on(table.status, table.nextAttemptAt),
+    index("webhook_deliveries_org_endpoint_idx").on(table.organizationId, table.endpointId, table.createdAt),
+  ],
+);
+
+export const backupStatuses = ["running", "completed", "failed", "expired"] as const;
+
+export const backups = sqliteTable(
+  "backups",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    status: text("status", { enum: backupStatuses }).notNull().default("running"),
+    /** `_backups/<organizationId>/<backupId>/`. Objects beneath it are immutable once written. */
+    objectPrefix: text("object_prefix").notNull(),
+    sizeBytes: integer("size_bytes").notNull().default(0),
+    /** Per-table integrity record, shown in the UI. Point-in-time-ish, not transactional. */
+    rowCounts: text("row_counts", { mode: "json" }).$type<Record<string, number>>().notNull().default({}),
+    /**
+     * Where the export got to. R2 objects are not appendable, so each chunk is its own
+     * object and `seq` names it; `rowId` is the keyset position within the current table.
+     */
+    cursor: text("cursor", { mode: "json" }).$type<{ table: string; rowId: number; seq: number } | null>(),
+    requestedByUserId: text("requested_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    startedAt: integer("started_at", { mode: "timestamp_ms" }).notNull(),
+    completedAt: integer("completed_at", { mode: "timestamp_ms" }),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
+    error: text("error"),
+    ...timestamps,
+  },
+  (table) => [
+    index("backups_org_started_idx").on(table.organizationId, table.startedAt),
+    // Partial: the expiry sweep only ever looks at rows that have an expiry.
+    index("backups_expiry_idx").on(table.expiresAt).where(sql`${table.expiresAt} IS NOT NULL`),
+  ],
+);
+
+export const settings = sqliteTable(
+  "settings",
+  {
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    value: text("value", { mode: "json" }).$type<unknown>().notNull(),
+    updatedByUserId: text("updated_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [primaryKey({ columns: [table.organizationId, table.key] })],
+);
+
+export const mailCaptures = sqliteTable(
+  "mail_captures",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id").references(() => organizations.id, { onDelete: "cascade" }),
+    toAddress: text("to_address").notNull(),
+    fromAddress: text("from_address").notNull(),
+    subject: text("subject").notNull(),
+    text: text("text").notNull(),
+    html: text("html"),
+    headers: text("headers", { mode: "json" }).$type<Record<string, string>>().notNull().default({}),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [
+    index("mail_captures_org_created_idx").on(table.organizationId, table.createdAt),
+    index("mail_captures_to_created_idx").on(table.toAddress, table.createdAt),
+  ],
+);
+
+export const passwordResetTokens = sqliteTable(
+  "password_reset_tokens",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull().unique(),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    usedAt: integer("used_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [
+    index("password_reset_tokens_user_idx").on(table.userId),
+    index("password_reset_tokens_expires_idx").on(table.expiresAt),
+  ],
+);
+
+export type Organization = typeof organizations.$inferSelect;
+export type User = typeof users.$inferSelect;
+export type Customer = typeof customers.$inferSelect;
+export type Ticket = typeof tickets.$inferSelect;
+export type Message = typeof messages.$inferSelect;
+
+export const maintenanceTasks = sqliteTable(
+  "maintenance_tasks",
+  {
+    id: text("id").primaryKey(),
+    kind: text("kind").notNull(),
+    organizationId: text("organization_id"),
+    customerId: text("customer_id"),
+    cursor: text("cursor"),
+    generation: integer("generation").notNull().default(0),
+    status: text("status").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    leaseUntil: integer("lease_until").notNull().default(0),
+    dispatchUntil: integer("dispatch_until").notNull().default(0),
+    nextAttemptAt: integer("next_attempt_at").notNull().default(0),
+  },
+  (table) => [index("maintenance_due_idx").on(table.status, table.nextAttemptAt)],
+);
+
+export const attachmentUploads = sqliteTable(
+  "attachment_uploads",
+  {
+    id: text("id").primaryKey(),
+    objectKey: text("object_key").notNull(),
+    organizationId: text("organization_id").notNull(),
+    userId: text("user_id").notNull(),
+    ticketId: text("ticket_id").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [index("attachment_uploads_created_idx").on(table.createdAt)],
+);
+export const knowledgeBaseArticles = sqliteTable(
+  "knowledge_base_articles",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    slug: text("slug").notNull(),
+    category: text("category"),
+    body: text("body").notNull(),
+    status: text("status", { enum: ["draft", "published"] })
+      .notNull()
+      .default("draft"),
+    version: integer("version").notNull().default(1),
+    publishedAt: integer("published_at", { mode: "timestamp_ms" }),
+    createdByUserId: text("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("kb_organization_slug_uidx").on(table.organizationId, table.slug),
+    index("kb_organization_status_idx").on(table.organizationId, table.status, table.updatedAt),
+  ],
+);
+
+export const automationRules = sqliteTable(
+  "automation_rules",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    position: integer("position").notNull().default(0),
+    conditions: text("conditions", { mode: "json" }).$type<unknown>().notNull(),
+    actions: text("actions", { mode: "json" }).$type<unknown>().notNull(),
+    createdByUserId: text("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    ...timestamps,
+  },
+  (table) => [index("automation_rules_organization_idx").on(table.organizationId, table.position, table.id)],
+);
+
+export const automationRuns = sqliteTable(
+  "automation_runs",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    ruleId: text("rule_id")
+      .notNull()
+      .references(() => automationRules.id, { onDelete: "cascade" }),
+    ticketId: text("ticket_id")
+      .notNull()
+      .references(() => tickets.id, { onDelete: "cascade" }),
+    eventKey: text("event_key").notNull(),
+    applied: text("applied").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [
+    uniqueIndex("automation_runs_event_uidx").on(table.organizationId, table.eventKey, table.ruleId),
+    index("automation_runs_ticket_idx").on(table.organizationId, table.ticketId),
+    index("automation_runs_rule_idx").on(table.organizationId, table.ruleId, table.createdAt),
+  ],
+);
+
+export const ticketSearchRows = sqliteTable(
+  "ticket_search_rows",
+  {
+    rowId: integer("row_id").primaryKey({ autoIncrement: true }),
+    organizationId: text("organization_id").notNull(),
+    ticketId: text("ticket_id").notNull(),
+  },
+  (table) => [uniqueIndex("ticket_search_rows_ticket_idx").on(table.organizationId, table.ticketId)],
+);
+export const mailDlqEvents = sqliteTable(
+  "mail_dlq_events",
+  {
+    id: text("id").primaryKey(),
+    kind: text("kind").notNull(),
+    reference: text("reference").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [uniqueIndex("mail_dlq_events_reference_uidx").on(table.id)],
+);

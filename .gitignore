@@ -1,0 +1,45 @@
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+!.dev.vars.local.example
+.env
+.env.*
+!.env.example
+.wrangler/
+dist/
+node_modules/
+test-results/
+playwright-report/
+coverage/
+*.log
+.DS_Store
+graphify-out/
+.impeccable/
+.agents/
+.codex/
+CLAUDE.md
+PRODUCT.md
+DESIGN.md
+*.tsbuildinfo
+.eslintcache
+.prettiercache
+AGENTS.md
+
+# Agent workflow artifacts
+.superpowers/
+docs/superpowers/
+docs/improvement-ideas-from-others/
+.claude/
+.cursor/
+.windsurf/
+.aider*
+*.original.md
+
+# Agent skills: the skill bodies live in .agents/ (ignored above) and are
+# symlinked into .claude/. The lockfile would otherwise be the one part of the
+# setup that reaches the public repo.
+skills-lock.json
+.skills/
+
+# Playwright sign-in state, regenerated each run
+e2e/.auth/

@@ -1,0 +1,111 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1788212214870,
+      "tag": "0000_gifted_scream",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788260400000,
+      "tag": "0001_operational_core",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788310800000,
+      "tag": "0002_mvp_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1788686173928,
+      "tag": "0003_cloudflare_reliability",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1788687728902,
+      "tag": "0004_message_cursors",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1788774000000,
+      "tag": "0005_full_product",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1788860400000,
+      "tag": "0006_inbox_tenant_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1788862200000,
+      "tag": "0007_customer_identities",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1788863400000,
+      "tag": "0008_outbound_send_marker",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1788865200000,
+      "tag": "0009_activity_actor_types",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1788867000000,
+      "tag": "0010_sla_and_snooze",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1788868800000,
+      "tag": "0011_csat",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1788870600000,
+      "tag": "0012_api_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1788872400000,
+      "tag": "0013_outbound_webhooks",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1788874200000,
+      "tag": "0014_workspace_backups",
+      "breakpoints": true
+    }
+  ]
+}
